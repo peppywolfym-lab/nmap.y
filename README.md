@@ -1,43 +1,206 @@
-Nmap [![Build Status](https://github.com/nmap/nmap/actions/workflows/build.yml/badge.svg)](https://github.com/nmap/nmap/actions/workflows/build.yml)
-====
+name: nmap multiplatform autobuilds
 
-Nmap is released under a custom license, which is based on (but not compatible
-with) GPLv2. The Nmap license allows free usage by end users, and we also offer
-a commercial license for companies that wish to redistribute Nmap technology
-with their products. See [Nmap Copyright and Licensing](https://nmap.org/book/man-legal.html)
-for full details.
+on:
+  push:
+    paths:
+      - ".github/workflows/build.yml"
+      - "**/*.c"
+      - "**/*.cc"
+      - "**/*.cpp"
+      - "**/*.h"
+      - "**/*.H"
+      - "**/*.in"
+      - "**/*.am"
+      - "**/*.ac"
+      - "**/*.lua"
+      - "**/*.cmakein"
+      - "**/configure"
+      - "**/*.pl"
+      - "**/*.py"
+      - "**/*.awk"
+      - "**/*.sh"
+      - "**/*.toml"
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploymentName:
+        description: "Name for this deployment"
+        required: true
+        default: "Manual Deployment"
 
-The latest version of this software as well as binary installers for Windows,
-macOS, and Linux (RPM) are available from
-[Nmap.org](https://nmap.org/download.html)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
-Full documentation is also available
-[on the Nmap.org website](https://nmap.org/docs.html).
+env:
+  MAKEFLAGS: -j3
 
-Questions and suggestions may be sent to
-[the Nmap-dev mailing list](https://nmap.org/mailman/listinfo/dev).
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-latest-gcc
+            os: ubuntu-latest
+            cc: gcc
+          - name: ubuntu-latest-gcc-arm64
+            os: ubuntu-latest
+            cc: gcc
+            arch: arm64
+          - name: ubuntu-latest-clang
+            os: ubuntu-latest
+            cc: clang
+          - name: macos-15-clang
+            os: macos-15
+            cc: clang
+          - name: macos-26-clang
+            os: macos-26
+            cc: clang
+          - name: freebsd-15-gcc
+            os: ubuntu-latest
+            cc: gcc
+          - name: freebsd-15-clang
+            os: ubuntu-latest
+            cc: clang
+          - name: openbsd-7-gcc
+            os: ubuntu-latest
+            cc: egcc
+          - name: openbsd-7-clang
+            os: ubuntu-latest
+            cc: clang
+          - name: netbsd-10-gcc
+            os: ubuntu-latest
+            cc: gcc
+          - name: netbsd-10-clang
+            os: ubuntu-latest
+            cc: clang
+          - name: solaris-11-gcc
+            os: ubuntu-latest
+            cc: gcc
+          - name: solaris-11-clang
+            os: ubuntu-latest
+            cc: clang
+          - name: windows-latest-msvc
+            os: windows-latest
+            cc: msvc
 
-Installing
-----------
-Ideally, you should be able to just type:
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
 
-    ./configure
-    make
-    make install
+      - name: Set up QEMU for ARM64
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: linux/arm64
 
-For far more in-depth compilation, installation, and removal notes, read the
-[Nmap Install Guide](https://nmap.org/book/install.html) on Nmap.org.
+      - name: Build Linux
+        if: startsWith(matrix.name,'ubuntu') && matrix.arch != 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang tree libpcap-dev libnet-dev libpcre2-dev
+          ./configure
+          make
+          make install DESTDIR=/tmp
+          tree /tmp/usr
 
-Using Nmap
-----------
-Nmap has a lot of features, but getting started is as easy as running `nmap
-scanme.nmap.org`. Running `nmap` without any parameters will give a helpful
-list of the most common options, which are discussed in depth in [the man
-page](https://nmap.org/book/man.html). Users who prefer a graphical interface
-can use the included [Zenmap front-end](https://nmap.org/zenmap/).
+      - name: Build Linux ARM64
+        if: startsWith(matrix.name,'ubuntu') && matrix.arch == 'arm64'
+        run: |
+          docker run --rm --platform linux/arm64 -v $PWD:/work -w /work ubuntu:latest bash -c "
+            apt-get update -q -y &&
+            apt-get install -q -y build-essential tree libpcap-dev libnet-dev libpcre2-dev libssl-dev autoconf automake &&
+            ./configure
+            make &&
+            make install DESTDIR=/tmp &&
+            tree /tmp/usr
+          "
 
-Contributing
-------------
-Information about filing bug reports and contributing to the Nmap project can
-be found in the [HACKING](HACKING) and [CONTRIBUTING.md](CONTRIBUTING.md)
-files.
+      - name: Build MacOS
+        if: startsWith(matrix.name,'macos')
+        run: |
+          brew update
+          # PCRE2 is already installed
+          brew install tree libpcap libnet openssl
+          ./configure --with-openssl=$(brew --prefix openssl)
+          make
+          make install DESTDIR=/tmp
+          tree /tmp/usr
+
+      - name: Build FreeBSD
+        if: startsWith(matrix.name,'freebsd')
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          prepare: |
+            # OS has libpcap already installed (and adding puts a second in /usr/local)
+            pkg install -y gcc llvm autotools tree pkgconf libnet pcre2 gmake dbus
+          run: |
+            ./configure
+            gmake
+            gmake install DESTDIR=/tmp
+            tree /tmp/usr
+
+      - name: Build OpenBSD
+        if: startsWith(matrix.name,'openbsd')
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            export PKG_PATH=https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/packages/$(uname -m)/
+            pkg_add -I -U autoconf%2.72 automake%1.17 gcc%11 llvm%19 tree pkgconf libnet%1.1 pcre2 gmake dbus
+          run: |
+            export AUTOCONF_VERSION=2.72
+            export AUTOMAKE_VERSION=1.17
+            ./configure
+            gmake
+            gmake install DESTDIR=/tmp
+            tree /tmp/usr
+
+      - name: Build NetBSD
+        if: startsWith(matrix.name,'netbsd')
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            export PATH=/usr/sbin:/usr/pkg/sbin:/usr/pkg/bin:$PATH
+            export PKG_PATH="http://cdn.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r | cut -d_ -f1)/All"
+            pkg_add -u gcc13 clang autoconf automake pkgconf libpcap libnet gmake
+          run: |
+            ./configure
+            gmake
+            gmake install DESTDIR=/tmp
+            tree /tmp/usr
+
+      - name: Build Solaris
+        if: startsWith(matrix.name,'solaris')
+        uses: vmactions/solaris-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install gcc-c clang autoconf automake pcre2 libpcap libnet developer/build/gnu-make
+          run: |
+            ./configure
+            gmake
+            gmake install DESTDIR=/tmp
+            tree /tmp/usr
+
+      - name: Install Subversion
+        if: startsWith(matrix.name,'windows')
+        shell: powershell
+        run: |
+          choco install svn -y --no-progress
+          $env:PATH = "C:\Program Files (x86)\Subversion\bin;C:\Program Files\Subversion\bin;$env:PATH"
+          echo "C:\Program Files (x86)\Subversion\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "C:\Program Files\Subversion\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows
+        if: startsWith(matrix.name,'windows')
+        shell: cmd
+        run: |
+          cd mswin32
+          Build.bat
