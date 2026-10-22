@@ -25,10 +25,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      deploymentName:
-        description: "Name for this deployment"
+      deploymentName: yasir
+        description: "happy soul"
         required: true
-        default: "Manual Deployment"
+        default: "Auto Deployment"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
